@@ -20,7 +20,7 @@
 
 package org.scalamock.ziotest
 
-import zio.test.{assertTrue, Assertion, Spec, TestAspectAtLeastR, TestEnvironment}
+import zio.test.{assertCompletes, assertTrue, Assertion, Spec, TestAspectAtLeastR, TestEnvironment}
 import zio._
 import zio.internal.stacktracer.SourceLocation
 import zio.test.Assertion._
@@ -186,6 +186,72 @@ object ScalamockZIOSpecSpec extends ScalamockZIOSpec {
 
         assertTrue(errorMessage.contains(expected))
       }
+    },
+    test("fail verification when a call forbidden by never is swallowed by catchAllCause") {
+      for {
+        _ <- ZIO.serviceWith[Service] { mock =>
+          (mock.f _).expects(*).never()
+        }
+        _ <- ZIO.serviceWithZIO[Service](_.f(42)).catchAllCause(_ => ZIO.unit)
+        result <- unsafeMockFactory.verifyExpectations().flip
+      } yield {
+        val errorMessage = result.getMessage
+        assertTrue(errorMessage.contains("Unexpected call") && errorMessage.contains("Service.f(42)"))
+      }
+    },
+    test("fail verification when a non-matching call is swallowed by catchAllCause") {
+      for {
+        _ <- ZIO.serviceWith[Service] { mock =>
+          (mock.f _).expects(42).anyNumberOfTimes().returnsZIO("-42")
+        }
+        _ <- ZIO.serviceWithZIO[Service](_.f(99)).catchAllCause(_ => ZIO.unit)
+        result <- unsafeMockFactory.verifyExpectations().flip
+      } yield {
+        val errorMessage = result.getMessage
+        assertTrue(errorMessage.contains("Unexpected call") && errorMessage.contains("Service.f(99)"))
+      }
+    },
+    test("fail verification when an unexpected call on a forked fiber is swallowed") {
+      for {
+        _ <- ZIO.serviceWith[Service] { mock =>
+          (mock.f _).expects(*).never()
+        }
+        _ <- ZIO.serviceWithZIO[Service](_.f(42).fork.flatMap(_.join)).catchAllCause(_ => ZIO.unit)
+        result <- unsafeMockFactory.verifyExpectations().flip
+      } yield {
+        val errorMessage = result.getMessage
+        assertTrue(errorMessage.contains("Unexpected call") && errorMessage.contains("Service.f(42)"))
+      }
+    },
+    test("report swallowed unexpected calls before an unsatisfied expectation") {
+      for {
+        _ <- ZIO.serviceWith[Service] { mock =>
+          (mock.f _).expects(42).returnsZIO("-42")
+        }
+        _ <- ZIO.serviceWithZIO[Service](_.f(1)).catchAllCause(_ => ZIO.unit)
+        _ <- ZIO.serviceWithZIO[Service](_.f(2)).catchAllCause(_ => ZIO.unit)
+        result <- unsafeMockFactory.verifyExpectations().flip
+      } yield {
+        val errorMessage = result.getMessage
+        val unexpected = errorMessage.indexOf("Unexpected call")
+        val unsatisfied = errorMessage.indexOf("Unsatisfied expectation")
+        assertTrue(
+          errorMessage.contains("Service.f(1)") &&
+            errorMessage.contains("Service.f(2)") &&
+            errorMessage.contains("UNSATISFIED") &&
+            unexpected >= 0 &&
+            unsatisfied > unexpected
+        )
+      }
+    },
+    test("not treat an expected defect as an unexpected call") {
+      for {
+        _ <- ZIO.serviceWith[Service] { mock =>
+          (mock.f _).expects(42).diesZIO(new RuntimeException("boom"))
+        }
+        _ <- ZIO.serviceWithZIO[Service](_.f(42)).catchAllCause(_ => ZIO.unit)
+        _ <- unsafeMockFactory.verifyExpectations()
+      } yield assertCompletes
     }
   )
 

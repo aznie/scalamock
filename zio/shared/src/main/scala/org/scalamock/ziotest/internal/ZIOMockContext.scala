@@ -21,10 +21,12 @@
 // placed in org.scalamock package to access MockContext
 package org.scalamock.ziotest.internal
 
-import org.scalamock.context.{CallLog, MockContext}
+import org.scalamock.context.{Call, CallLog, MockContext}
 import org.scalamock.handlers.{Handlers, OrderedHandlers, UnorderedHandlers}
 import org.scalamock.ziotest.ExpectationException
 import zio.{IO, UIO, ZIO}
+
+import scala.collection.mutable.ListBuffer
 
 /**
  * Creates mocks for zio-test. Verifies mock calls.
@@ -47,6 +49,17 @@ object ZIOMockContext {
 
     val mockContext: MockContext = this
 
+    // Production code can hide an unexpected call:
+    //
+    //   // test
+    //   (service.call _).expects(*).never()
+    //   // production
+    //   service.call(42).catchAllCause(_ => ZIO.unit)
+    //
+    // The same happens when a forked fiber fails and that failure is ignored.
+    // Remember the call so verifyExpectations fails the test anyway.
+    private val unexpectedCalls = new ListBuffer[Call]
+
     override type ExpectationException = org.scalamock.ziotest.ExpectationException
 
     override protected def newExpectationException(message: String, methodName: Option[Symbol]) = {
@@ -62,6 +75,11 @@ object ZIOMockContext {
       new ExpectationException(s"$sep$sep$message")
     }
 
+    override private[scalamock] def reportUnexpectedCall(call: Call) = {
+      recordUnexpectedCall(call)
+      super.reportUnexpectedCall(call)
+    }
+
     // copy-paste from org.scalamock.MockFactoryBase
     def initializeExpectations(): UIO[Unit] = ZIO.succeed {
       val initialHandlers = new UnorderedHandlers
@@ -69,6 +87,7 @@ object ZIOMockContext {
 
       expectationContext = initialHandlers
       currentExpectationContext = initialHandlers
+      clearUnexpectedCalls()
     }
 
     private def clearExpectations(): UIO[Unit] = ZIO.succeed {
@@ -85,14 +104,46 @@ object ZIOMockContext {
         })
         oldCallLog = callLog
         oldExpectationContext = expectationContext
+        oldUnexpectedCalls = drainUnexpectedCalls()
         _ <- clearExpectations()
-        _ <- ZIO.when(!oldExpectationContext.isSatisfied) {
-          ZIO.fail(
-            newExpectationException(s"Unsatisfied expectation:\n\n${errorContext(oldCallLog, oldExpectationContext)}")
-          )
+        _ <- ZIO.when(oldUnexpectedCalls.nonEmpty || !oldExpectationContext.isSatisfied) {
+          ZIO.fail(verificationFailure(oldUnexpectedCalls, oldCallLog, oldExpectationContext))
         }
       } yield ()
 
+    }
+
+    private def recordUnexpectedCall(call: Call): Unit =
+      unexpectedCalls.synchronized {
+        unexpectedCalls += call
+      }
+
+    private def clearUnexpectedCalls(): Unit =
+      unexpectedCalls.synchronized {
+        unexpectedCalls.clear()
+      }
+
+    private def drainUnexpectedCalls(): List[Call] =
+      unexpectedCalls.synchronized {
+        val calls = unexpectedCalls.toList
+        unexpectedCalls.clear()
+        calls
+      }
+
+    private def verificationFailure(
+        unexpected: List[Call],
+        oldCallLog: CallLog,
+        oldExpectationContext: Handlers
+    ): ExpectationException = {
+      val context = errorContext(oldCallLog, oldExpectationContext)
+      val message =
+        if (unexpected.isEmpty) s"Unsatisfied expectation:\n\n$context"
+        else {
+          val calls = unexpected.map(call => s"Unexpected call: $call").mkString("\n")
+          if (oldExpectationContext.isSatisfied) s"$calls\n\n$context"
+          else s"$calls\n\nUnsatisfied expectation:\n\n$context"
+        }
+      newExpectationException(message)
     }
 
     override protected[ziotest] def inSequence[T](what: => T): T = {

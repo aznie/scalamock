@@ -59,7 +59,7 @@ lazy val `scalamock-zio` = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     commonSettings,
     crossScalaSettings,
     libraryDependencies ++= {
-      val zioVersion = "2.1.26"
+      val zioVersion = "2.1.27"
       Seq(
         "dev.zio" %%% "zio" % zioVersion,
         "dev.zio" %%% "zio-test" % zioVersion,

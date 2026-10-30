@@ -124,7 +124,7 @@ private[scalamock] class Utils(using val quotes: Quotes):
           findByArgumentTypes(tpe, selected.name, paramTypes, appliedTypes)
 
     private def findByArgumentTypes(tpe: TypeRepr, name: String, paramTypes: List[TypeRepr], appliedTypes: List[TypeRepr]): MockableDefinition =
-      MockableDefinitions(tpe)
+      inTraversalOrder(tpe)
         .filter(method => method.symbol.name == name && matchesSignature(method, paramTypes, appliedTypes))
         .sortWith((a, b) => a.rawTypes.zip(b.rawTypes).forall(_ <:< _))
         .headOption
@@ -209,7 +209,7 @@ private[scalamock] class Utils(using val quotes: Quotes):
       else if sym.isValDef && !sym.flags.is(Flags.Deferred) then Some("it is a concrete val")
       else None
 
-    def apply(tpe: TypeRepr): List[MockableDefinition] =
+    private def inTraversalOrder(tpe: TypeRepr): List[MockableDefinition] =
       val methods = tpe.typeSymbol.methodMembers.filter(exclusionReason(_).isEmpty)
 
       // Number each method among its own overloads, ordered by erased signature, rather than by its
@@ -227,6 +227,13 @@ private[scalamock] class Utils(using val quotes: Quotes):
         .filter(_.flags.is(Flags.Deferred))
         .map(sym => MockableDefinition(0, sym, tpe))
       methods.map(sym => MockableDefinition(overloadIndex(sym), sym, tpe)) ++ vals
+
+    def apply(tpe: TypeRepr): List[MockableDefinition] =
+      val definitions = inTraversalOrder(tpe)
+      // Native JS overload dispatch currently depends on the final property initializer. Preserve its
+      // traversal until that separate dispatch bug is fixed; ordinary Scala types use one stable list
+      // for both class generation and expectation lookup.
+      if isJsAny(tpe) then definitions else definitions.sortBy(d => (d.symbol.name, d.idx))
 
   extension (tpe: TypeRepr)
     def collectTypes: (List[TypeRepr], TypeRepr) =

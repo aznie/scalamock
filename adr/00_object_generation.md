@@ -28,6 +28,21 @@ which updates internal state for each corresponding method.
 
 Each method has a unique index of method from provided definition. The order depends on compiler.
 
+Expectations and stub configuration use the overload the compiler already selected in
+`(m.foo(_: A))` or `m.foo`. When that symbol is one of the receiver's mockable definitions, it is
+used directly, independent of emission order. When it is a member of the receiver that cannot be
+mocked, such as a `final` overload, configuration is a compile error rather than a binding to a
+sibling. A function configured for a selected definition must still cover its full
+parameter list, with each argument type conforming to its parameter: a function that drops a
+`using` or defaulted parameter, fixes an argument, or relies on widening is a compile error,
+because the generated mock function has the method's arity and parameter types.
+
+The receiver's class may not list the selected symbol at all, for example when the receiver is
+typed through an opaque alias's bound and the class implements the method with an override or
+with a member inherited from another parent. Reflection cannot ask the compiler which member that
+is, so this case keeps the earlier lookup by name and argument types. That lookup can bind a
+related overload when argument types do not tell the overloads apart.
+
 If there are multiple arguments - scalamock tuples them.
 
 ```scala

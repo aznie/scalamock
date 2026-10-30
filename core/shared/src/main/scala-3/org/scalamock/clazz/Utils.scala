@@ -212,21 +212,22 @@ private[scalamock] class Utils(using val quotes: Quotes):
     private def inTraversalOrder(tpe: TypeRepr): List[MockableDefinition] =
       val methods = tpe.typeSymbol.methodMembers.filter(exclusionReason(_).isEmpty)
 
-      // Number each method among its own overloads, ordered by erased signature, rather than by its
-      // position among all of the type's members. That position follows the compiler's name hashes,
-      // which differ between compiler runs, so a mock class and an expectation compiled in different
-      // runs (incremental compilation, or a mock created in one module and used in another) would
-      // otherwise look for different field names. Overloads of one name can't share an erased signature.
+      val vals = tpe.typeSymbol.fieldMembers.filter(_.flags.is(Flags.Deferred))
+      val members = methods ++ vals
+
+      // Within each name, number the members that take parameters by erased signature. A parameterless
+      // member is named without an index (see MockableDefinition), so it doesn't shift them. Global
+      // traversal follows compiler name hashes, which differ between runs and must not determine a mock
+      // class's or expectation's field names.
       def erasedSignature(sym: Symbol): String =
         val signature = sym.signature
         signature.paramSigs.mkString(",") + ")" + signature.resultSig
-      val overloadIndex: Map[Symbol, Int] =
-        methods.groupBy(_.name).values.flatMap(_.sortBy(erasedSignature).zipWithIndex).toMap
+      val memberIndexInName: Map[Symbol, Int] =
+        members.filterNot(isParameterless).groupBy(_.name).values
+          .flatMap(_.sortBy(erasedSignature).zipWithIndex)
+          .toMap
 
-      val vals = tpe.typeSymbol.fieldMembers
-        .filter(_.flags.is(Flags.Deferred))
-        .map(sym => MockableDefinition(0, sym, tpe))
-      methods.map(sym => MockableDefinition(overloadIndex(sym), sym, tpe)) ++ vals
+      members.map(sym => MockableDefinition(memberIndexInName.getOrElse(sym, ParameterlessIdx), sym, tpe))
 
     def apply(tpe: TypeRepr): List[MockableDefinition] =
       val definitions = inTraversalOrder(tpe)
@@ -245,9 +246,18 @@ private[scalamock] class Utils(using val quotes: Quotes):
           case other                        => (argTypesAcc.reverse.flatten, other)
       loop(tpe, Nil, TypeRepr.of[Nothing])
 
+  // A class has at most one parameterless member per name (val x, def x or def x()), and overriding keeps
+  // it parameterless. Naming its field without an index keeps that name the same through every parent,
+  // whether the parent declares a val, a def, or only same-name methods that take parameters.
+  private def isParameterless(sym: Symbol): Boolean = sym.signature.paramSigs.isEmpty
+
+  // Sorts a parameterless member before same-name members that take parameters.
+  private val ParameterlessIdx = -1
+
   case class MockableDefinition(idx: Int, symbol: Symbol, ownerTpe: TypeRepr):
-    val mockValName = s"mock$$${symbol.name}$$$idx"
-    val stubValName = s"stub$$${symbol.name}$$$idx"
+    private val fieldKey = if isParameterless(symbol) then "nullary" else idx.toString
+    val mockValName = s"mock$$${symbol.name}$$$fieldKey"
+    val stubValName = s"stub$$${symbol.name}$$$fieldKey"
     val tpe = ownerTpe.memberType(symbol)
     val (rawTypes, rawResType) = tpe.widen.collectTypes
 

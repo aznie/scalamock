@@ -26,9 +26,20 @@ For each method in provided definition scalamock generates a `StubbedMethod[Args
 When method is called - scalamock gets corresponding `StubbedMethod` and calls it's `impl` method with provided arguments,
 which updates internal state for each corresponding method.
 
-In Scala 3, each method gets an index within its own name group, numbered by erased signature,
-and a deferred val takes index 0. Adding an unrelated member therefore changes no existing field
-name. Adding another overload can still change a method's index.
+In Scala 3, members that take parameters get an index within their name group, numbered by erased
+signature. A class has at most one parameterless member per name (`val x`, `def x` or `def x()`),
+and overriding keeps it parameterless, so its field takes a `nullary` suffix instead of an index
+(`stub$x$nullary`, `mock$x$nullary`). That name is the same through every parent: one declaring a
+val, one declaring a parameterless def, or one declaring only same-name members with parameters.
+Adding an unrelated member, or a parameterless member, therefore changes no existing field name.
+Adding another overload with parameters can still change a method's index.
+
+These field names are computed twice: when a mock is created and when it is configured. The module
+that creates a mock and the module that configures it must therefore be compiled against the same
+ScalaMock version. The scheme changed in 7.6.2 (indices per name instead of per type) and changes
+again after it (`nullary` fields, and a parameterless def no longer shifts same-name overloads), so
+a mock compiled against 7.6.2 must be recompiled before newer code configures it. Otherwise
+configuration fails with `NoSuchMethodException` or reaches another member's mock function.
 
 For ordinary Scala types, definitions are emitted in member-name/index order. Native Scala.js types
 retain compiler traversal order because their existing JS property dispatcher overwrites earlier
